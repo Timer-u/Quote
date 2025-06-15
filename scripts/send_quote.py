@@ -22,11 +22,11 @@ def get_quote():
     """从 API 获取励志名言"""
     url = "https://v3.alapi.cn/api/mingyan"
     params = {"token": ALAPI_TOKEN, "format": "json"}
-    headers = {"Content-Type": "application/json"}
 
     try:
         logger.info("请求API获取名言...")
-        response = requests.get(url, params=params, headers=headers, timeout=10)
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()  # 如果HTTP请求返回了错误状态码，则抛出异常
         data = response.json()
         if data.get("code") == 200:
             quote = data["data"]["content"]
@@ -35,6 +35,10 @@ def get_quote():
             return f"{quote}\n\n——{author}"
         logger.warning(f"API响应异常: {data}")
         return "获取名言失败，请检查API状态"
+    except requests.exceptions.JSONDecodeError as e:
+        logger.error(f"API响应非JSON格式: {str(e)}")
+        logger.error(f"收到的响应内容: {response.text}")
+        return f"API响应格式错误，无法解析名言。"
     except Exception as e:
         logger.error(f"API请求错误: {str(e)}")
         return f"API请求错误: {str(e)}"
@@ -44,13 +48,7 @@ def create_email_content():
     """创建邮件内容（中文格式）"""
     quote = get_quote()
     date_str = datetime.now().strftime("%Y年%m月%d日")
-    content = (
-        f"亲爱的同学，高考加油！\n\n"
-        f"✨ 今日励志名言 ({date_str})：\n\n"
-        f"{quote}\n\n"
-        f"—— 来自您的备考助手\n\n"
-        f"注：此邮件使用PGP端到端加密，签名密钥ID: 171EBC63CE71906C"
-    )
+    content = f"今日励志名言 ({date_str})：\n\n" f"{quote}\n\n"
     logger.info("邮件内容创建完成")
     return content
 
@@ -61,8 +59,7 @@ def encrypt_message(content):
         logger.info("初始化GPG...")
         # 创建临时目录用于存储密钥环
         with tempfile.TemporaryDirectory() as temp_dir:
-            # 初始化GPG实例
-            gpg = gnupg.GPG(gnupghome=temp_dir)
+            gpg = gnupg.GPG(gnupghome=temp_dir, encoding="utf-8")
 
             public_key = os.getenv("PGP_PUBLIC_KEY")
             logger.info("导入公钥...")
@@ -72,7 +69,7 @@ def encrypt_message(content):
                 raise ValueError("公钥导入失败")
 
             logger.info("加密内容...")
-            # 直接传递文本内容（GPG会自动处理编码）
+            # 直接传递文本内容，GPG实例现在会使用UTF-8进行处理
             encrypted = gpg.encrypt(
                 content, recipients=["171EBC63CE71906C"], always_trust=True, sign=False
             )
@@ -94,7 +91,7 @@ def send_email(encrypted_content):
     try:
         logger.info("准备发送邮件...")
         msg = MIMEText(encrypted_content, _charset="utf-8")
-        msg["Subject"] = "📚 您的每日备考励志名言"
+        msg["Subject"] = "每日励志名言"
         msg["From"] = os.getenv("GMAIL_USER")
         msg["To"] = RECIPIENT
         msg["X-PGP-Key-ID"] = "171EBC63CE71906C"
@@ -117,4 +114,5 @@ if __name__ == "__main__":
         send_email(encrypted_content)
     except Exception as e:
         logger.critical(f"程序执行失败: {str(e)}")
+        # 在CI/CD环境中，重新抛出异常以使job失败是正确的做法
         raise
