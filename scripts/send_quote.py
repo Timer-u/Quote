@@ -2,9 +2,10 @@ import os
 import requests
 import gnupg
 import smtplib
+import logging
+import tempfile
 from email.mime.text import MIMEText
 from datetime import datetime
-import logging
 
 # 配置日志
 logging.basicConfig(
@@ -43,7 +44,13 @@ def create_email_content():
     """创建邮件内容（中文格式）"""
     quote = get_quote()
     date_str = datetime.now().strftime("%Y年%m月%d日")
-    content = f"✨ 今日励志名言 ({date_str})：\n\n" f"{quote}\n\n"
+    content = (
+        f"亲爱的同学，高考加油！\n\n"
+        f"✨ 今日励志名言 ({date_str})：\n\n"
+        f"{quote}\n\n"
+        f"—— 来自您的备考助手\n\n"
+        f"注：此邮件使用PGP端到端加密，签名密钥ID: 171EBC63CE71906C"
+    )
     logger.info("邮件内容创建完成")
     return content
 
@@ -52,31 +59,31 @@ def encrypt_message(content):
     """使用PGP加密消息"""
     try:
         logger.info("初始化GPG...")
-        gpg = gnupg.GPG(encoding="utf-8")  # 明确指定UTF-8编码
+        # 创建临时目录用于存储密钥环
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # 初始化GPG实例
+            gpg = gnupg.GPG(gnupghome=temp_dir)
 
-        public_key = os.getenv("PGP_PUBLIC_KEY")
-        logger.info("导入公钥...")
-        import_result = gpg.import_keys(public_key)
+            public_key = os.getenv("PGP_PUBLIC_KEY")
+            logger.info("导入公钥...")
+            import_result = gpg.import_keys(public_key)
 
-        if not import_result.fingerprints:
-            raise ValueError("公钥导入失败")
+            if not import_result.fingerprints:
+                raise ValueError("公钥导入失败")
 
-        logger.info("加密内容...")
-        # 直接传递字节数据避免编码问题
-        encrypted = gpg.encrypt(
-            content.encode("utf-8"),  # 显式编码为UTF-8字节
-            recipients=["171EBC63CE71906C"],
-            always_trust=True,
-            sign=False,
-        )
+            logger.info("加密内容...")
+            # 直接传递文本内容（GPG会自动处理编码）
+            encrypted = gpg.encrypt(
+                content, recipients=["171EBC63CE71906C"], always_trust=True, sign=False
+            )
 
-        if not encrypted.ok:
-            error_msg = f"加密失败: {encrypted.status}\n{encrypted.stderr}"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
+            if not encrypted.ok:
+                error_msg = f"加密失败: {encrypted.status}\n{encrypted.stderr}"
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
 
-        logger.info("内容加密成功")
-        return str(encrypted)
+            logger.info("内容加密成功")
+            return str(encrypted)
     except Exception as e:
         logger.exception("加密过程中发生异常")
         raise
