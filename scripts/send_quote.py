@@ -26,7 +26,7 @@ def get_quote():
     try:
         logger.info("请求API获取名言...")
         response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()  # 如果HTTP请求返回了错误状态码，则抛出异常
+        response.raise_for_status()
         data = response.json()
         if data.get("code") == 200:
             quote = data["data"]["content"]
@@ -57,9 +57,8 @@ def encrypt_message(content):
     """使用PGP加密消息"""
     try:
         logger.info("初始化GPG...")
-        # 创建临时目录用于存储密钥环
         with tempfile.TemporaryDirectory() as temp_dir:
-            gpg = gnupg.GPG(gnupghome=temp_dir, encoding="utf-8")
+            gpg = gnupg.GPG(gnupghome=temp_dir)
 
             public_key = os.getenv("PGP_PUBLIC_KEY")
             logger.info("导入公钥...")
@@ -69,9 +68,11 @@ def encrypt_message(content):
                 raise ValueError("公钥导入失败")
 
             logger.info("加密内容...")
-            # 直接传递文本内容，GPG实例现在会使用UTF-8进行处理
             encrypted = gpg.encrypt(
-                content, recipients=["171EBC63CE71906C"], always_trust=True, sign=False
+                content.encode("utf-8"),
+                recipients=["171EBC63CE71906C"],
+                always_trust=True,
+                sign=False,
             )
 
             if not encrypted.ok:
@@ -114,5 +115,4 @@ if __name__ == "__main__":
         send_email(encrypted_content)
     except Exception as e:
         logger.critical(f"程序执行失败: {str(e)}")
-        # 在CI/CD环境中，重新抛出异常以使job失败是正确的做法
         raise
