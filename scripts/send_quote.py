@@ -1,11 +1,14 @@
-import os
-import requests
-import gnupg
-import smtplib
 import logging
+import os
+import smtplib
 import tempfile
-from email.mime.text import MIMEText
 from datetime import datetime
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+import gnupg
+import requests
 
 # 配置日志
 logging.basicConfig(
@@ -88,15 +91,43 @@ def encrypt_message(content):
 
 
 def send_email(encrypted_content):
-    """通过Gmail发送加密邮件"""
+    """通过 Gmail 发送符合RFC 3156的加密邮件"""
     try:
-        logger.info("准备发送邮件...")
-        msg = MIMEText(encrypted_content, _charset="utf-8")
+        logger.info("准备发送符合RFC 3156的加密邮件...")
+
+        # 创建 multipart/encrypted 容器
+        msg = MIMEMultipart(
+            _subtype="encrypted",
+            protocol="application/pgp-encrypted",
+            boundary=f"encrypted-boundary-{datetime.now().timestamp()}",
+        )
         msg["Subject"] = "每日励志名言"
         msg["From"] = os.getenv("GMAIL_USER")
         msg["To"] = RECIPIENT
-        msg["X-PGP-Key-ID"] = "171EBC63CE71906C"
+        msg["Date"] = datetime.now().strftime("%a, %d %b %Y %H:%M:%S %z")
+        msg["Message-ID"] = (
+            f"<{datetime.now().timestamp()}@{os.getenv('GMAIL_USER').split('@')[1]}>"
+        )
 
+        # 第一部分：控制信息 (Version: 1)
+        control_part = MIMEText("Version: 1", _subtype="plain", _charset="us-ascii")
+        control_part.add_header("Content-Type", "application/pgp-encrypted")
+        control_part.add_header("Content-Disposition", "attachment")
+        msg.attach(control_part)
+
+        # 第二部分：加密数据 (application/octet-stream)
+        # 注意：PGP加密数据已是ASCII-armor格式，但按RFC需作为二进制处理
+        encrypted_part = MIMEApplication(
+            encrypted_content.encode("utf-8"),
+            _subtype="octet-stream",
+            _encoder=lambda _: None,  # 禁用额外编码（已是ASCII-armor）
+        )
+        encrypted_part.add_header(
+            "Content-Disposition", "attachment; filename=encrypted.asc"
+        )
+        msg.attach(encrypted_part)
+
+        # 发送邮件
         logger.info(f"连接到Gmail服务器...")
         with smtplib.SMTP("smtp.gmail.com", 587) as server:
             server.starttls()
