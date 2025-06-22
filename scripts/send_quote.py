@@ -96,11 +96,7 @@ def send_email(encrypted_content):
         logger.info("准备发送符合RFC 3156的加密邮件...")
 
         # 创建 multipart/encrypted 容器
-        msg = MIMEMultipart(
-            _subtype="encrypted",
-            protocol="application/pgp-encrypted",
-            boundary=f"encrypted-boundary-{datetime.now().timestamp()}",
-        )
+        msg = MIMEMultipart(_subtype="encrypted", protocol="application/pgp-encrypted")
         msg["Subject"] = "每日励志名言"
         msg["From"] = os.getenv("GMAIL_USER")
         msg["To"] = RECIPIENT
@@ -109,22 +105,22 @@ def send_email(encrypted_content):
             f"<{datetime.now().timestamp()}@{os.getenv('GMAIL_USER').split('@')[1]}>"
         )
 
-        # 第一部分：控制信息 (Version: 1)
-        control_part = MIMEText("Version: 1", _subtype="plain", _charset="us-ascii")
-        control_part.add_header("Content-Type", "application/pgp-encrypted")
-        control_part.add_header("Content-Disposition", "attachment")
+        # 第一部分：控制信息
+        from email.message import Message
+
+        control_part = Message()
+        control_part["Content-Type"] = "application/pgp-encrypted"
+        control_part["Content-Disposition"] = "attachment"
+        control_part.set_payload("Version: 1\r\n")
         msg.attach(control_part)
 
-        # 第二部分：加密数据 (application/octet-stream)
-        # 注意：PGP加密数据已是ASCII-armor格式，但按RFC需作为二进制处理
-        encrypted_part = MIMEApplication(
-            encrypted_content.encode("utf-8"),
-            _subtype="octet-stream",
-            _encoder=lambda _: None,  # 禁用额外编码（已是ASCII-armor）
+        # 第二部分：加密数据
+        encrypted_part = Message()
+        encrypted_part["Content-Type"] = (
+            'application/octet-stream; name="encrypted.asc"'
         )
-        encrypted_part.add_header(
-            "Content-Disposition", "attachment; filename=encrypted.asc"
-        )
+        encrypted_part["Content-Disposition"] = 'inline; filename="encrypted.asc"'
+        encrypted_part.set_payload(encrypted_content)
         msg.attach(encrypted_part)
 
         # 发送邮件
