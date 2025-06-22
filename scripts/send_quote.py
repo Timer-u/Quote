@@ -3,9 +3,10 @@ import os
 import smtplib
 import tempfile
 from datetime import datetime
+from email.message import Message
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+from email.utils import make_msgid
 
 import gnupg
 import requests
@@ -18,7 +19,11 @@ logger = logging.getLogger(__name__)
 
 # 从环境变量获取敏感信息
 ALAPI_TOKEN = os.getenv("ALAPI_TOKEN")
-RECIPIENT = os.getenv("RECIPIENT_EMAIL")
+RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL")
+GMAIL_USER = os.getenv("GMAIL_USER")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
+PGP_PUBLIC_KEY = os.getenv("PGP_PUBLIC_KEY")
+RECIPIENT_KEY_ID = "171EBC63CE71906C"
 
 
 def get_quote():
@@ -41,14 +46,14 @@ def get_quote():
     except requests.exceptions.JSONDecodeError as e:
         logger.error(f"API响应非JSON格式: {str(e)}")
         logger.error(f"收到的响应内容: {response.text}")
-        return f"API响应格式错误，无法解析名言。"
+        return "API响应格式错误，无法解析名言。"
     except Exception as e:
         logger.error(f"API请求错误: {str(e)}")
         return f"API请求错误: {str(e)}"
 
 
 def create_email_content():
-    """创建邮件内容（中文格式）"""
+    """创建邮件内容"""
     quote = get_quote()
     date_str = datetime.now().strftime("%Y年%m月%d日")
     content = f"今日励志名言 ({date_str})：\n\n" f"{quote}\n\n"
@@ -63,17 +68,16 @@ def encrypt_message(content):
         with tempfile.TemporaryDirectory() as temp_dir:
             gpg = gnupg.GPG(gnupghome=temp_dir)
 
-            public_key = os.getenv("PGP_PUBLIC_KEY")
             logger.info("导入公钥...")
-            import_result = gpg.import_keys(public_key)
+            import_result = gpg.import_keys(PGP_PUBLIC_KEY)
 
             if not import_result.fingerprints:
                 raise ValueError("公钥导入失败")
 
-            logger.info("加密内容...")
+            logger.info(f"使用 Key ID {RECIPIENT_KEY_ID} 加密内容...")
             encrypted = gpg.encrypt(
                 content.encode("utf-8"),
-                recipients=["171EBC63CE71906C"],
+                recipients=[RECIPIENT_KEY_ID],
                 always_trust=True,
                 sign=False,
             )
@@ -84,51 +88,46 @@ def encrypt_message(content):
                 raise RuntimeError(error_msg)
 
             logger.info("内容加密成功")
-            return str(encrypted)
+            return encrypted.data
     except Exception as e:
         logger.exception("加密过程中发生异常")
         raise
 
 
-def send_email(encrypted_content):
+def send_email(encrypted_data):
     """通过 Gmail 发送符合RFC 3156的加密邮件"""
     try:
         logger.info("准备发送符合RFC 3156的加密邮件...")
 
         # 创建 multipart/encrypted 容器
-        msg = MIMEMultipart(_subtype="encrypted", protocol="application/pgp-encrypted")
+        msg = MIMEMultipart("encrypted", protocol="application/pgp-encrypted")
         msg["Subject"] = "每日励志名言"
-        msg["From"] = os.getenv("GMAIL_USER")
-        msg["To"] = RECIPIENT
+        msg["From"] = GMAIL_USER
+        msg["To"] = RECIPIENT_EMAIL
         msg["Date"] = datetime.now().strftime("%a, %d %b %Y %H:%M:%S %z")
-        msg["Message-ID"] = (
-            f"<{datetime.now().timestamp()}@{os.getenv('GMAIL_USER').split('@')[1]}>"
-        )
+        # 生成 Message-ID
+        msg["Message-ID"] = make_msgid(domain=GMAIL_USER.split("@")[1])
 
-        # 第一部分：控制信息
-        from email.message import Message
-
+        # 第一部分：控制信息 (application/pgp-encrypted)
         control_part = Message()
         control_part["Content-Type"] = "application/pgp-encrypted"
         control_part["Content-Disposition"] = "attachment"
         control_part.set_payload("Version: 1\r\n")
         msg.attach(control_part)
 
-        # 第二部分：加密数据
-        encrypted_part = Message()
-        encrypted_part["Content-Type"] = (
-            'application/octet-stream; name="encrypted.asc"'
+        # 第二部分：加密数据 (application/octet-stream)
+        encrypted_part = MIMEApplication(encrypted_data, "octet-stream")
+        encrypted_part.add_header(
+            "Content-Disposition", 'inline; filename="encrypted.asc"'
         )
-        encrypted_part["Content-Disposition"] = 'inline; filename="encrypted.asc"'
-        encrypted_part.set_payload(encrypted_content)
         msg.attach(encrypted_part)
 
         # 发送邮件
         logger.info(f"连接到Gmail服务器...")
         with smtplib.SMTP("smtp.gmail.com", 587) as server:
             server.starttls()
-            server.login(os.getenv("GMAIL_USER"), os.getenv("GMAIL_APP_PASSWORD"))
-            server.send_message(msg)
+            server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+            server.sendmail(GMAIL_USER, RECIPIENT_EMAIL, msg.as_string())
             logger.info("邮件发送成功")
     except Exception as e:
         logger.exception("邮件发送失败")
@@ -136,10 +135,20 @@ def send_email(encrypted_content):
 
 
 if __name__ == "__main__":
-    try:
-        content = create_email_content()
-        encrypted_content = encrypt_message(content)
-        send_email(encrypted_content)
-    except Exception as e:
-        logger.critical(f"程序执行失败: {str(e)}")
-        raise
+    # 检查必要的环境变量
+    required_vars = [
+        "ALAPI_TOKEN",
+        "RECIPIENT_EMAIL",
+        "GMAIL_USER",
+        "GMAIL_APP_PASSWORD",
+        "PGP_PUBLIC_KEY",
+    ]
+    if not all(os.getenv(var) for var in required_vars):
+        logger.critical(f"缺少必要的环境变量。请确保设置: {', '.join(required_vars)}")
+    else:
+        try:
+            content = create_email_content()
+            encrypted_data = encrypt_message(content)
+            send_email(encrypted_data)
+        except Exception as e:
+            logger.critical(f"程序执行失败: {str(e)}")
