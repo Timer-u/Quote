@@ -67,7 +67,8 @@ def encrypt_message(content):
     try:
         logger.info("初始化GPG...")
         with tempfile.TemporaryDirectory() as temp_dir:
-            gpg = gnupg.GPG(gnupghome=temp_dir)
+            # 指定 UTF-8 编码来支持中文字符
+            gpg = gnupg.GPG(gnupghome=temp_dir, encoding="utf-8")
 
             logger.info("导入公钥...")
             import_result = gpg.import_keys(PGP_PUBLIC_KEY)
@@ -77,10 +78,10 @@ def encrypt_message(content):
 
             logger.info(f"使用 Key ID {RECIPIENT_KEY_ID} 加密内容...")
             encrypted = gpg.encrypt(
-                content,  # 不需要编码，gnupg会处理
+                content,  # 正确处理中文
                 recipients=[RECIPIENT_KEY_ID],
                 always_trust=True,
-                armor=True,  # 确保输出是ASCII armor格式
+                armor=True,  # 输出ASCII armor格式
                 sign=False,
             )
 
@@ -117,7 +118,7 @@ def send_email(encrypted_data):
         # 第二部分：加密数据 (application/octet-stream)
         encrypted_part = MIMEBase("application", "octet-stream")
         encrypted_part.set_payload(encrypted_data)
-        # 设置文件名，这对某些邮件客户端很重要
+        # 设置文件名
         encrypted_part.add_header(
             "Content-Disposition", "inline", filename="encrypted.asc"
         )
