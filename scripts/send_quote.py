@@ -3,10 +3,11 @@ import os
 import smtplib
 import tempfile
 from datetime import datetime
-from email.message import Message
-from email.mime.application import MIMEApplication
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
-from email.utils import make_msgid
+from email.mime.text import MIMEText
+from email.utils import make_msgid, formatdate
+from email import encoders
 
 import gnupg
 import requests
@@ -76,9 +77,10 @@ def encrypt_message(content):
 
             logger.info(f"使用 Key ID {RECIPIENT_KEY_ID} 加密内容...")
             encrypted = gpg.encrypt(
-                content.encode("utf-8"),
+                content,  # 不需要编码，gnupg会处理
                 recipients=[RECIPIENT_KEY_ID],
                 always_trust=True,
+                armor=True,  # 确保输出是ASCII armor格式
                 sign=False,
             )
 
@@ -88,7 +90,7 @@ def encrypt_message(content):
                 raise RuntimeError(error_msg)
 
             logger.info("内容加密成功")
-            return encrypted.data
+            return str(encrypted)  # 返回ASCII armor格式的字符串
     except Exception as e:
         logger.exception("加密过程中发生异常")
         raise
@@ -100,25 +102,24 @@ def send_email(encrypted_data):
         logger.info("准备发送符合RFC 3156的加密邮件...")
 
         # 创建 multipart/encrypted 容器
-        msg = MIMEMultipart("encrypted", protocol="application/pgp-encrypted")
+        msg = MIMEMultipart(_subtype="encrypted", protocol="application/pgp-encrypted")
         msg["Subject"] = "每日励志名言"
         msg["From"] = GMAIL_USER
         msg["To"] = RECIPIENT_EMAIL
-        msg["Date"] = datetime.now().strftime("%a, %d %b %Y %H:%M:%S %z")
-        # 生成 Message-ID
+        msg["Date"] = formatdate(localtime=True)  # 使用formatdate确保正确的日期格式
         msg["Message-ID"] = make_msgid(domain=GMAIL_USER.split("@")[1])
 
         # 第一部分：控制信息 (application/pgp-encrypted)
-        control_part = Message()
-        control_part["Content-Type"] = "application/pgp-encrypted"
-        control_part["Content-Disposition"] = "attachment"
+        control_part = MIMEBase("application", "pgp-encrypted")
         control_part.set_payload("Version: 1\r\n")
         msg.attach(control_part)
 
         # 第二部分：加密数据 (application/octet-stream)
-        encrypted_part = MIMEApplication(encrypted_data, "octet-stream")
+        encrypted_part = MIMEBase("application", "octet-stream")
+        encrypted_part.set_payload(encrypted_data)
+        # 设置文件名，这对某些邮件客户端很重要
         encrypted_part.add_header(
-            "Content-Disposition", 'inline; filename="encrypted.asc"'
+            "Content-Disposition", "inline", filename="encrypted.asc"
         )
         msg.attach(encrypted_part)
 
@@ -143,8 +144,10 @@ if __name__ == "__main__":
         "GMAIL_APP_PASSWORD",
         "PGP_PUBLIC_KEY",
     ]
-    if not all(os.getenv(var) for var in required_vars):
-        logger.critical(f"缺少必要的环境变量。请确保设置: {', '.join(required_vars)}")
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+
+    if missing_vars:
+        logger.critical(f"缺少必要的环境变量: {', '.join(missing_vars)}")
     else:
         try:
             content = create_email_content()
