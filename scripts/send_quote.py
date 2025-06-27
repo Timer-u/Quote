@@ -8,6 +8,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import make_msgid, formatdate
 from email import encoders
+import base64
 
 import gnupg
 import requests
@@ -57,7 +58,7 @@ def create_email_content():
     """创建邮件内容"""
     quote = get_quote()
     date_str = datetime.now().strftime("%Y年%m月%d日")
-    content = f"今日励志名言 ({date_str})：\n\n" f"{quote}\n\n"
+    content = f"今日励志名言 ({date_str})：\n\n{quote}\n\n"
     logger.info("邮件内容创建完成")
     return content
 
@@ -67,8 +68,10 @@ def encrypt_message(content):
     try:
         logger.info("初始化GPG...")
         with tempfile.TemporaryDirectory() as temp_dir:
-            # 指定 UTF-8 编码来支持中文字符
-            gpg = gnupg.GPG(gnupghome=temp_dir, encoding="utf-8")
+            gpg = gnupg.GPG(gnupghome=temp_dir)
+
+            # 设置编码选项
+            gpg.encoding = "utf-8"
 
             logger.info("导入公钥...")
             import_result = gpg.import_keys(PGP_PUBLIC_KEY)
@@ -77,21 +80,35 @@ def encrypt_message(content):
                 raise ValueError("公钥导入失败")
 
             logger.info(f"使用 Key ID {RECIPIENT_KEY_ID} 加密内容...")
+
+            # 方法1：直接使用字符串，让 gnupg 处理编码
             encrypted = gpg.encrypt(
-                content,  # 正确处理中文
+                content,
                 recipients=[RECIPIENT_KEY_ID],
                 always_trust=True,
-                armor=True,  # 输出ASCII armor格式
+                armor=True,
                 sign=False,
             )
 
             if not encrypted.ok:
-                error_msg = f"加密失败: {encrypted.status}\n{encrypted.stderr}"
-                logger.error(error_msg)
-                raise RuntimeError(error_msg)
+                # 如果第一种方法失败，尝试手动编码
+                logger.warning("直接加密失败，尝试手动编码...")
+                content_bytes = content.encode("utf-8")
+                encrypted = gpg.encrypt(
+                    content_bytes,
+                    recipients=[RECIPIENT_KEY_ID],
+                    always_trust=True,
+                    armor=True,
+                    sign=False,
+                )
+
+                if not encrypted.ok:
+                    error_msg = f"加密失败: {encrypted.status}\n{encrypted.stderr}"
+                    logger.error(error_msg)
+                    raise RuntimeError(error_msg)
 
             logger.info("内容加密成功")
-            return str(encrypted)  # 返回ASCII armor格式的字符串
+            return str(encrypted)
     except Exception as e:
         logger.exception("加密过程中发生异常")
         raise
@@ -107,7 +124,7 @@ def send_email(encrypted_data):
         msg["Subject"] = "每日励志名言"
         msg["From"] = GMAIL_USER
         msg["To"] = RECIPIENT_EMAIL
-        msg["Date"] = formatdate(localtime=True)  # 使用formatdate确保正确的日期格式
+        msg["Date"] = formatdate(localtime=True)
         msg["Message-ID"] = make_msgid(domain=GMAIL_USER.split("@")[1])
 
         # 第一部分：控制信息 (application/pgp-encrypted)
@@ -118,7 +135,6 @@ def send_email(encrypted_data):
         # 第二部分：加密数据 (application/octet-stream)
         encrypted_part = MIMEBase("application", "octet-stream")
         encrypted_part.set_payload(encrypted_data)
-        # 设置文件名
         encrypted_part.add_header(
             "Content-Disposition", "inline", filename="encrypted.asc"
         )
@@ -133,6 +149,62 @@ def send_email(encrypted_data):
             logger.info("邮件发送成功")
     except Exception as e:
         logger.exception("邮件发送失败")
+        raise
+
+
+# 备选方案：如果 gnupg 库有编码问题，可以使用这个简化的加密函数
+def encrypt_message_alternative(content):
+    """使用命令行 gpg 加密（备选方案）"""
+    import subprocess
+
+    try:
+        logger.info("使用命令行GPG加密...")
+
+        # 创建临时文件存储公钥
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".asc", delete=False
+        ) as key_file:
+            key_file.write(PGP_PUBLIC_KEY)
+            key_file_path = key_file.name
+
+        try:
+            # 导入公钥
+            subprocess.run(
+                ["gpg", "--import", key_file_path], capture_output=True, check=True
+            )
+
+            # 加密内容
+            process = subprocess.Popen(
+                [
+                    "gpg",
+                    "--armor",
+                    "--encrypt",
+                    "--trust-model",
+                    "always",
+                    "-r",
+                    RECIPIENT_KEY_ID,
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            encrypted_data, error = process.communicate(input=content)
+
+            if process.returncode != 0:
+                raise RuntimeError(f"GPG加密失败: {error}")
+
+            logger.info("内容加密成功")
+            return encrypted_data
+
+        finally:
+            # 清理临时文件
+            if os.path.exists(key_file_path):
+                os.unlink(key_file_path)
+
+    except Exception as e:
+        logger.exception("加密过程中发生异常")
         raise
 
 
@@ -152,7 +224,15 @@ if __name__ == "__main__":
     else:
         try:
             content = create_email_content()
-            encrypted_data = encrypt_message(content)
+
+            # 尝试使用 gnupg 库加密
+            try:
+                encrypted_data = encrypt_message(content)
+            except Exception as e:
+                # 如果失败，使用备选方案
+                logger.warning(f"gnupg库加密失败: {e}, 尝试使用命令行GPG")
+                encrypted_data = encrypt_message_alternative(content)
+
             send_email(encrypted_data)
         except Exception as e:
             logger.critical(f"程序执行失败: {str(e)}")
